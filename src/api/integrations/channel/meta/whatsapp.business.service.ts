@@ -690,8 +690,6 @@ export class BusinessStartupService extends ChannelStartupService {
         }
         //console.log('ERR1', JSON.stringify(createdMessage, null, 2));
 
-        sleep(0.2);
-
         const mensagemBanco = createdMessage?.key?.remoteJid;
 
         // var imutável
