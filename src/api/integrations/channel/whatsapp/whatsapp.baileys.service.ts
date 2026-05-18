@@ -1872,6 +1872,9 @@ export class BaileysStartupService extends ChannelStartupService {
     },
   };
 
+  private ringingSeen = new Map<string, NodeJS.Timeout>();
+  private readonly RINGING_TTL_MS = 15_000;
+
   private eventHandler() {
     this.client.ev.process(async (events) => {
       this.eventProcessingQueue = this.eventProcessingQueue.then(async () => {
@@ -1896,6 +1899,20 @@ export class BaileysStartupService extends ChannelStartupService {
                 this.client.ev.emit('messages.upsert', { messages: [msg], type: 'notify' });
               }
 
+              if (call.status === 'ringing') {
+                if (this.ringingSeen.has(call.id)) {
+                  return;
+                }
+                const timer = setTimeout(() => this.ringingSeen.delete(call.id), this.RINGING_TTL_MS);
+                timer.unref();
+                this.ringingSeen.set(call.id, timer);
+              }
+
+              const callStatus = call.status as string;
+              if (callStatus === 'ringing' || callStatus === 'relaylatency') {
+                return;
+              }
+              (call as any).instanceId = this.instanceId;
               this.sendDataWebhook(Events.CALL, call);
             }
 
