@@ -131,9 +131,16 @@ export class BusinessStartupService extends ChannelStartupService {
     try {
       this.loadChatwoot();
 
-      this.eventHandler(content);
+      // Captura local ANTES de qualquer await, evitando race condition
+      const phoneNumber = createJid(
+        content.messages ? content.messages[0].from : content.statuses[0]?.recipient_id,
+      );
+      console.log("phoneNumber->", phoneNumber);
 
-      this.phoneNumber = createJid(content.messages ? content.messages[0].from : content.statuses[0]?.recipient_id);
+      // Mantém this.phoneNumber para compatibilidade com outros usos externos
+      this.phoneNumber = phoneNumber;
+
+      this.eventHandler(content, phoneNumber);
     } catch (error) {
       this.logger.error(error);
       throw new InternalServerErrorException(error?.toString());
@@ -382,10 +389,12 @@ export class BusinessStartupService extends ChannelStartupService {
     return messageType;
   }
 
-  protected async messageHandle(received: any, database: Database, settings: any) {
+  protected async messageHandle(received: any, database: Database, settings: any, phoneNumber: string) {
     try {
       let messageRaw: any;
       let pushName: any;
+
+      let createdMessage: any = null;
 
       if (received.contacts) pushName = received.contacts[0].profile.name;
 
@@ -394,7 +403,7 @@ export class BusinessStartupService extends ChannelStartupService {
 
         const key = {
           id: message.id,
-          remoteJid: this.phoneNumber,
+          remoteJid: phoneNumber,
           fromMe: message.from === received.metadata.phone_number_id,
         };
 
@@ -499,9 +508,13 @@ export class BusinessStartupService extends ChannelStartupService {
                   'Content-Type': mimetype,
                 });
 
-                const createdMessage = await this.prismaRepository.message.create({
+                createdMessage = await this.prismaRepository.message.create({
                   data: messageRaw,
                 });
+
+                // console.log(JSON.stringify(createdMessage))
+                // const mensagemBanco = createdMessage?.key?.remoteJid;
+                // console.log("DB:", mensagemBanco)
 
                 await this.prismaRepository.media.create({
                   data: {
@@ -664,38 +677,61 @@ export class BusinessStartupService extends ChannelStartupService {
           // await this.client.readMessages([received.key]);
         }
 
-        this.logger.log(messageRaw);
+        //this.logger.log(messageRaw);
 
         sendTelemetry(`received.message.${messageRaw.messageType ?? 'unknown'}`);
 
-        this.sendDataWebhook(Events.MESSAGES_UPSERT, messageRaw);
+        //#Alteracoes minhas
 
-        await chatbotController.emit({
-          instance: { instanceName: this.instance.name, instanceId: this.instanceId },
-          remoteJid: messageRaw.key.remoteJid,
-          msg: messageRaw,
-          pushName: messageRaw.pushName,
-        });
-
-        if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
-          const chatwootSentMessage = await this.chatwootService.eventWhatsapp(
-            Events.MESSAGES_UPSERT,
-            { instanceName: this.instance.name, instanceId: this.instanceId },
-            messageRaw,
-          );
-
-          if (chatwootSentMessage?.id) {
-            messageRaw.chatwootMessageId = chatwootSentMessage.id;
-            messageRaw.chatwootInboxId = chatwootSentMessage.id;
-            messageRaw.chatwootConversationId = chatwootSentMessage.id;
-          }
-        }
-
-        if (!this.isMediaMessage(message) && message.type !== 'sticker') {
-          await this.prismaRepository.message.create({
+        if (!createdMessage && !this.isMediaMessage(message) && message.type !== 'sticker') {
+          createdMessage = await this.prismaRepository.message.create({
             data: messageRaw,
           });
         }
+        //console.log('ERR1', JSON.stringify(createdMessage, null, 2));
+
+        sleep(0.2);
+
+        const mensagemBanco = createdMessage?.key?.remoteJid;
+
+        // var imutável
+        const payloadWebhook = structuredClone(messageRaw);
+
+        const remoteJidBanco = mensagemBanco;
+
+        const remoteJidPayload = payloadWebhook?.key?.remoteJid;
+        //const remoteJidPayload = '5511999999999@s.whatsapp.net';
+
+        if (remoteJidBanco === remoteJidPayload) {
+          console.log('True Teste');
+        }
+        //r
+        this.logger.error(`remoteJid Banco: ${remoteJidBanco}`);
+        this.logger.error(`remoteJid Payload: ${remoteJidPayload}`);
+
+        if (!remoteJidBanco || !remoteJidPayload) {
+          this.logger.error('remoteJid ausente. Enviando payload original.');
+        } else if (remoteJidBanco !== remoteJidPayload) {
+          this.logger.error(
+            `remoteJid DIFERENTE ❌❌❌❌ banco=${remoteJidBanco} payload=${remoteJidPayload} — corrigindo`,
+          );
+
+          payloadWebhook.key = {
+            ...payloadWebhook.key,
+            remoteJid: remoteJidBanco,
+          };
+          this.logger.error(`✅ remoteJid corrigido com sucesso | novo_valor=${remoteJidBanco}`);
+        } else {
+          this.logger.error(`remoteJid OK ✅ (iguais)`);
+        }
+
+        // 🔥 dispara UMA ÚNICA vez, já corrigido se necessário
+        this.sendDataWebhook(Events.MESSAGES_UPSERT, payloadWebhook);
+
+        // ##### WEBHOOK QUE ERA DISPARADO ANTES
+        //this.sendDataWebhook(Events.MESSAGES_UPSERT, messageRaw);
+
+        //#Alteracoes minhas
 
         const contact = await this.prismaRepository.contact.findFirst({
           where: { instanceId: this.instanceId, remoteJid: key.remoteJid },
@@ -747,7 +783,7 @@ export class BusinessStartupService extends ChannelStartupService {
         for await (const item of received.statuses) {
           const key = {
             id: item.id,
-            remoteJid: this.phoneNumber,
+            remoteJid: phoneNumber,
             fromMe: this.phoneNumber === received.metadata.phone_number_id,
           };
           if (settings?.groups_ignore && key.remoteJid.includes('@g.us')) {
@@ -893,7 +929,7 @@ export class BusinessStartupService extends ChannelStartupService {
     return message;
   }
 
-  protected async eventHandler(content: any) {
+  protected async eventHandler(content: any, phoneNumber: string) {
     try {
       // Registro para depuración
       this.logger.log('Contenido recibido en eventHandler:');
@@ -922,13 +958,13 @@ export class BusinessStartupService extends ChannelStartupService {
           message.type === 'reaction'
         ) {
           // Procesar el mensaje normalmente
-          this.messageHandle(content, database, settings);
+          this.messageHandle(content, database, settings, phoneNumber);
         } else {
           this.logger.warn(`Tipo de mensaje no reconocido: ${message.type}`);
         }
       } else if (content.statuses) {
         // Procesar actualizaciones de estado
-        this.messageHandle(content, database, settings);
+        this.messageHandle(content, database, settings, phoneNumber);
       } else {
         this.logger.warn('No se encontraron mensajes ni estados en el contenido recibido');
       }
