@@ -1390,7 +1390,7 @@ export class BaileysStartupService extends ChannelStartupService {
                   if (isVideo && !this.configService.get<S3>('S3').SAVE_VIDEO) {
                     this.logger.warn('Video upload is disabled. Skipping video upload.');
                     // Skip video upload by returning early from this block
-                    return;
+                    //return;
                   }
 
                   const message: any = received;
@@ -1405,7 +1405,7 @@ export class BaileysStartupService extends ChannelStartupService {
 
                     if (!media) {
                       this.logger.verbose('No valid media to upload (messageContextInfo only), skipping MinIO');
-                      return;
+                      //return;
                     }
 
                     const { buffer, mediaType, fileName, size } = media;
@@ -2476,7 +2476,7 @@ export class BaileysStartupService extends ChannelStartupService {
 
               if (!media) {
                 this.logger.verbose('No valid media to upload (messageContextInfo only), skipping MinIO');
-                return;
+                //return;
               }
 
               const { buffer, mediaType, fileName, size } = media;
@@ -3851,7 +3851,13 @@ export class BaileysStartupService extends ChannelStartupService {
         }
       }
 
-      if ('messageContextInfo' in msg.message && Object.keys(msg.message).length === 1) {
+      const mediaTypes = [
+        'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage',
+        'stickerMessage', 'ptvMessage', 'documentWithCaptionMessage',
+      ];
+      const hasRealMedia = mediaTypes.some((type) => type in msg.message);
+
+      if (!hasRealMedia) {
         this.logger.verbose('Message contains only messageContextInfo, skipping media processing');
         return null;
       }
