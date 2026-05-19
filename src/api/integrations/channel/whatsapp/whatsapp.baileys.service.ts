@@ -248,6 +248,12 @@ export class BaileysStartupService extends ChannelStartupService {
   private authStateProvider: AuthStateProvider;
   private readonly msgRetryCounterCache: CacheStore = new NodeCache();
   private readonly userDevicesCache: CacheStore = new NodeCache({ stdTTL: 300000, useClones: false });
+  // In-memory message store keyed by id (and "remoteJid:id"). Preserves original Buffer types
+  // (notably messageContextInfo.messageSecret) so Baileys can decrypt secretEncryptedMessage edits.
+  private readonly messageCache = new NodeCache({ stdTTL: 60 * 60 * 6, useClones: false });
+  // Periodic presence:available heartbeat. Without it, WA flags the linked device
+  // as idle/offline and batches deliveries (~60s delay on incoming msgs/edits).
+  private presenceHeartbeat?: NodeJS.Timeout;
   private endSession = false;
   private logBaileys = this.configService.get<Log>('LOG').BAILEYS;
   private eventProcessingQueue: Promise<void> = Promise.resolve();
@@ -513,6 +519,20 @@ export class BaileysStartupService extends ChannelStartupService {
         profilePictureUrl: this.instance.profilePictureUrl,
         ...this.stateConnection,
       });
+
+      // Start presence heartbeat — keeps WA pushing messages in real time.
+      if (this.presenceHeartbeat) clearInterval(this.presenceHeartbeat);
+      this.presenceHeartbeat = setInterval(() => {
+        this.client?.sendPresenceUpdate('available').catch(() => {
+          /* swallow — next tick retries */
+        });
+      }, 25_000);
+      this.client?.sendPresenceUpdate('available').catch(() => {});
+    }
+
+    if (connection === 'close' && this.presenceHeartbeat) {
+      clearInterval(this.presenceHeartbeat);
+      this.presenceHeartbeat = undefined;
     }
 
     if (connection === 'connecting') {
@@ -520,35 +540,64 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
+  private storeMessageInCache(msg: WAMessage) {
+    if (!msg?.message || !msg.key?.id) return;
+    this.messageCache.set(msg.key.id, msg.message);
+    if (msg.key.remoteJid) {
+      this.messageCache.set(`${msg.key.remoteJid}:${msg.key.id}`, msg.message);
+    }
+  }
+
   private async getMessage(key: proto.IMessageKey, full = false) {
     try {
-      // Use raw SQL to avoid JSON path issues
-      const webMessageInfo = (await this.prismaRepository.$queryRaw`
-        SELECT * FROM "Message"
-        WHERE "instanceId" = ${this.instanceId}
-        AND "key"->>'id' = ${key.id}
-      `) as proto.IWebMessageInfo[];
+      if (!key?.id) return { conversation: '' };
 
-      if (full) {
-        return webMessageInfo[0];
-      }
-      if (webMessageInfo[0].message?.pollCreationMessage) {
-        const messageSecretBase64 = webMessageInfo[0].message?.messageContextInfo?.messageSecret;
-
-        if (typeof messageSecretBase64 === 'string') {
-          const messageSecret = Buffer.from(messageSecretBase64, 'base64');
-
-          const msg = {
-            messageContextInfo: { messageSecret },
-            pollCreationMessage: webMessageInfo[0].message?.pollCreationMessage,
-          };
-
-          return msg;
+      // 1. In-memory cache — preserves Buffers (messageSecret etc.) so edit decryption works.
+      if (key.id && !full) {
+        const cached =
+          this.messageCache.get<proto.IMessage>(`${key.remoteJid}:${key.id}`) ??
+          this.messageCache.get<proto.IMessage>(key.id);
+        if (cached) {
+          this.logger.verbose(`getMessage cache HIT id=${key.id}`);
+          return cached;
         }
+        this.logger.verbose(`getMessage cache MISS id=${key.id} jid=${key.remoteJid}`);
       }
 
-      return webMessageInfo[0].message;
-    } catch {
+      // 2. DB fallback — Prisma client (compatible with PostgreSQL and MySQL).
+      const row = await this.prismaRepository.message.findFirst({
+        where: {
+          instanceId: this.instanceId,
+          key: { path: ['id'], equals: key.id } as any,
+        },
+      });
+
+      if (!row) {
+        this.logger.warn(`getMessage not found in DB id=${key.id}`);
+        return { conversation: '' };
+      }
+      if (full) return row as any;
+
+      const msg = row.message as any;
+
+      // JSON storage loses Buffer types. Convert known binary fields back to Buffer
+      // so Baileys can use them (messageSecret feeds HKDF for edit/poll decryption).
+      const secretB64 = msg?.messageContextInfo?.messageSecret;
+      if (typeof secretB64 === 'string') {
+        msg.messageContextInfo.messageSecret = Buffer.from(secretB64, 'base64');
+      }
+
+      if (msg?.pollCreationMessage && Buffer.isBuffer(msg?.messageContextInfo?.messageSecret)) {
+        return {
+          messageContextInfo: { messageSecret: msg.messageContextInfo.messageSecret },
+          pollCreationMessage: msg.pollCreationMessage,
+          };
+      }
+
+      this.logger.verbose(`getMessage DB HIT id=${key.id} hasSecret=${Buffer.isBuffer(msg?.messageContextInfo?.messageSecret)}`);
+          return msg;
+    } catch (error) {
+      this.logger.error(`getMessage fallback: ${(error as Error)?.message}`);
       return { conversation: '' };
     }
   }
@@ -635,10 +684,21 @@ export class BaileysStartupService extends ChannelStartupService {
       }
     }
 
+    // Silence the noisy "stream errored out" log from Baileys (socket.js:790).
+    // The reconnect handler already deals with the event; the level=error log
+    // just floods stdout when WA keeps replacing the session.
+    const baileysLogger = P({ level: this.logBaileys });
+    const originalError = baileysLogger.error.bind(baileysLogger);
+    (baileysLogger as any).error = (obj: any, msg?: string) => {
+      const text = typeof obj === 'string' ? obj : msg;
+      if (text === 'stream errored out') return;
+      return originalError(obj, msg);
+    };
+
     const socketConfig: UserFacingSocketConfig = {
       ...options,
       version,
-      logger: P({ level: this.logBaileys }),
+      logger: baileysLogger,
       printQRInTerminal: false,
       auth: {
         creds: this.instance.authState.state.creds,
@@ -651,7 +711,7 @@ export class BaileysStartupService extends ChannelStartupService {
       markOnlineOnConnect: this.localSettings.alwaysOnline,
       retryRequestDelayMs: 350,
       maxMsgRetryCount: 4,
-      fireInitQueries: true,
+      fireInitQueries: false,
       connectTimeoutMs: 30_000,
       keepAliveIntervalMs: 30_000,
       qrTimeout: 45_000,
@@ -1043,6 +1103,7 @@ export class BaileysStartupService extends ChannelStartupService {
             }
           }
 
+          this.storeMessageInCache(m);
           messagesRaw.push(this.prepareMessage(m));
         }
 
@@ -1084,6 +1145,9 @@ export class BaileysStartupService extends ChannelStartupService {
       settings: any,
     ) => {
       try {
+        for (const m of messages) {
+          this.storeMessageInCache(m);
+        }
         for (const received of messages) {
           if (
             received?.messageStubParameters?.some?.((param) =>
@@ -1202,6 +1266,12 @@ export class BaileysStartupService extends ChannelStartupService {
           }
 
           const messageRaw = this.prepareMessage(received);
+
+          // Skip raw secretEncryptedMessage envelope — Baileys decrypts it via processMessage
+          // and emits the real edit through messages.update, which our handler persists.
+          if (messageRaw.messageType === 'secretEncryptedMessage') {
+            continue;
+          }
 
           if (messageRaw.messageType === 'pollUpdateMessage') {
             const pollCreationKey = messageRaw.message.pollUpdateMessage.pollCreationMessageKey;
@@ -1489,9 +1559,20 @@ export class BaileysStartupService extends ChannelStartupService {
             pushName: messageRaw.pushName,
           });
 
+          const remoteJidAlt = (received.key as any).remoteJidAlt as string | undefined;
           const contact = await this.prismaRepository.contact.findFirst({
-            where: { remoteJid: received.key.remoteJid, instanceId: this.instanceId },
+            where: {
+              instanceId: this.instanceId,
+              OR: [
+                { remoteJid: received.key.remoteJid },
+                ...(remoteJidAlt ? [{ remoteJid: remoteJidAlt }] : []),
+              ],
+            },
           });
+
+          const profilePicUrl = contact
+            ? contact.profilePicUrl
+            : (await this.profilePicture(received.key.remoteJid)).profilePictureUrl;
 
           const contactRaw: {
             remoteJid: string;
@@ -1501,7 +1582,7 @@ export class BaileysStartupService extends ChannelStartupService {
           } = {
             remoteJid: received.key.remoteJid,
             pushName: received.key.fromMe ? '' : received.key.fromMe == null ? '' : received.pushName,
-            profilePicUrl: (await this.profilePicture(received.key.remoteJid)).profilePictureUrl,
+            profilePicUrl,
             instanceId: this.instanceId,
           };
 
@@ -1650,6 +1731,65 @@ export class BaileysStartupService extends ChannelStartupService {
               continue;
             }
             message.messageId = findMessage.id;
+          }
+
+          // Edit envelope emitted via messages.update (new secretEncryptedMessage path).
+          // Legacy protocolMessage edits are handled in messages.upsert; this branch covers
+          // the post-decryption rewrap done by Baileys for MESSAGE_EDIT envelopes.
+          const editedInner = (update as any)?.message?.editedMessage?.message;
+          if (editedInner && findMessage?.id) {
+            const editedTs = update.messageTimestamp
+              ? Long.isLong(update.messageTimestamp)
+                ? Math.floor(update.messageTimestamp.toNumber())
+                : Math.floor(update.messageTimestamp as number)
+              : findMessage.messageTimestamp;
+
+            await this.prismaRepository.message.update({
+              where: { id: findMessage.id },
+              data: { message: editedInner, messageTimestamp: editedTs, status: 'EDITED' },
+            });
+
+            if (this.configService.get<Database>('DATABASE').SAVE_DATA.MESSAGE_UPDATE) {
+              await this.prismaRepository.messageUpdate.create({
+                data: {
+                  fromMe: key.fromMe,
+                  keyId: key.id,
+                  remoteJid: key.remoteJid,
+                  status: 'EDITED',
+                  instanceId: this.instanceId,
+                  messageId: findMessage.id,
+                },
+              });
+            }
+
+            await this.sendDataWebhook(Events.MESSAGES_EDITED, {
+              key,
+              editedMessage: editedInner,
+              messageTimestamp: editedTs,
+            });
+
+            // Also emit MESSAGES_UPDATE so CRMs subscribed to the legacy edit
+            // signal (status=EDITED on a message-update event) keep working.
+            await this.sendDataWebhook(Events.MESSAGES_UPDATE, {
+              keyId: key.id,
+              remoteJid: key.remoteJid,
+              fromMe: key.fromMe,
+              participant: key.participant,
+              status: 'EDITED',
+              message: { editedMessage: { message: editedInner } },
+              messageId: findMessage.id,
+              instanceId: this.instanceId,
+            });
+
+            if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
+              this.chatwootService.eventWhatsapp(
+                'messages.edit',
+                { instanceName: this.instance.name, instanceId: this.instance.id },
+                { key, editedMessage: editedInner },
+              );
+            }
+
+            continue;
           }
 
           if (update.message === null && update.status === undefined) {
@@ -1872,9 +2012,6 @@ export class BaileysStartupService extends ChannelStartupService {
     },
   };
 
-  private ringingSeen = new Map<string, NodeJS.Timeout>();
-  private readonly RINGING_TTL_MS = 15_000;
-
   private eventHandler() {
     this.client.ev.process(async (events) => {
       this.eventProcessingQueue = this.eventProcessingQueue.then(async () => {
@@ -1899,20 +2036,6 @@ export class BaileysStartupService extends ChannelStartupService {
                 this.client.ev.emit('messages.upsert', { messages: [msg], type: 'notify' });
               }
 
-              if (call.status === 'ringing') {
-                if (this.ringingSeen.has(call.id)) {
-                  return;
-                }
-                const timer = setTimeout(() => this.ringingSeen.delete(call.id), this.RINGING_TTL_MS);
-                timer.unref();
-                this.ringingSeen.set(call.id, timer);
-              }
-
-              const callStatus = call.status as string;
-              if (callStatus === 'ringing' || callStatus === 'relaylatency') {
-                return;
-              }
-              (call as any).instanceId = this.instanceId;
               this.sendDataWebhook(Events.CALL, call);
             }
 
@@ -2439,6 +2562,7 @@ export class BaileysStartupService extends ChannelStartupService {
         messageSent.messageTimestamp = messageSent.messageTimestamp?.toNumber();
       }
 
+      this.storeMessageInCache(messageSent);
       const messageRaw = this.prepareMessage(messageSent);
 
       const isMedia =
@@ -3868,13 +3992,7 @@ export class BaileysStartupService extends ChannelStartupService {
         }
       }
 
-      const mediaTypes = [
-        'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage',
-        'stickerMessage', 'ptvMessage', 'documentWithCaptionMessage',
-      ];
-      const hasRealMedia = mediaTypes.some((type) => type in msg.message);
-
-      if (!hasRealMedia) {
+      if ('messageContextInfo' in msg.message && Object.keys(msg.message).length === 1) {
         this.logger.verbose('Message contains only messageContextInfo, skipping media processing');
         return null;
       }
