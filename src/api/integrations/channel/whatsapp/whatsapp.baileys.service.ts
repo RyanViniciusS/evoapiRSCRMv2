@@ -412,7 +412,7 @@ export class BaileysStartupService extends ChannelStartupService {
       qrcodeTerminal.generate(qr, { small: true }, (qrcode) =>
         this.logger.log(
           `\n{ instance: ${this.instance.name} pairingCode: ${this.instance.qrcode.pairingCode}, qrcodeCount: ${this.instance.qrcode.count} }\n` +
-            qrcode,
+          qrcode,
         ),
       );
 
@@ -527,7 +527,7 @@ export class BaileysStartupService extends ChannelStartupService {
           /* swallow — next tick retries */
         });
       }, 25_000);
-      this.client?.sendPresenceUpdate('available').catch(() => {});
+      this.client?.sendPresenceUpdate('available').catch(() => { });
     }
 
     if (connection === 'close' && this.presenceHeartbeat) {
@@ -591,11 +591,11 @@ export class BaileysStartupService extends ChannelStartupService {
         return {
           messageContextInfo: { messageSecret: msg.messageContextInfo.messageSecret },
           pollCreationMessage: msg.pollCreationMessage,
-          };
+        };
       }
 
       this.logger.verbose(`getMessage DB HIT id=${key.id} hasSecret=${Buffer.isBuffer(msg?.messageContextInfo?.messageSecret)}`);
-          return msg;
+      return msg;
     } catch (error) {
       this.logger.error(`getMessage fallback: ${(error as Error)?.message}`);
       return { conversation: '' };
@@ -1059,16 +1059,16 @@ export class BaileysStartupService extends ChannelStartupService {
 
         const messagesRepository: Set<string> = new Set(
           chatwootImport.getRepositoryMessagesCache(instance) ??
-            (
-              await this.prismaRepository.message.findMany({
-                select: { key: true },
-                where: { instanceId: this.instanceId },
-              })
-            ).map((message) => {
-              const key = message.key as { id: string };
+          (
+            await this.prismaRepository.message.findMany({
+              select: { key: true },
+              where: { instanceId: this.instanceId },
+            })
+          ).map((message) => {
+            const key = message.key as { id: string };
 
-              return key.id;
-            }),
+            return key.id;
+          }),
         );
 
         if (chatwootImport.getRepositoryMessagesCache(instance) === null) {
@@ -3992,7 +3992,13 @@ export class BaileysStartupService extends ChannelStartupService {
         }
       }
 
-      if ('messageContextInfo' in msg.message && Object.keys(msg.message).length === 1) {
+      const mediaTypes = [
+        'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage',
+        'stickerMessage', 'ptvMessage', 'documentWithCaptionMessage',
+      ];
+      const hasRealMedia = mediaTypes.some((type) => type in msg.message);
+
+      if (!hasRealMedia) {
         this.logger.verbose('Message contains only messageContextInfo, skipping media processing');
         return null;
       }
