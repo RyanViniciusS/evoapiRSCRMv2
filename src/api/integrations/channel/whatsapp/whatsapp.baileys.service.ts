@@ -722,10 +722,11 @@ export class BaileysStartupService extends ChannelStartupService {
         }
 
         const isGroupJid = this.localSettings.groupsIgnore && isJidGroup(jid);
-        const isBroadcast = !this.localSettings.readStatus && isJidBroadcast(jid);
+        //const isBroadcast = !this.localSettings.readStatus && isJidBroadcast(jid);
+        const isBroadcast = false;
         const isNewsletter = isJidNewsletter(jid);
-
-        return isGroupJid || isBroadcast || isNewsletter;
+        const isStatusBroadcast = jid === 'status@broadcast';
+        return isGroupJid || isBroadcast || isNewsletter || isStatusBroadcast;
       },
       syncFullHistory: this.localSettings.syncFullHistory,
       shouldSyncHistoryMessage: (msg: proto.Message.IHistorySyncNotification) => {
