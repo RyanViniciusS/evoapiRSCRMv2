@@ -1713,11 +1713,16 @@ export class BaileysStartupService extends ChannelStartupService {
             const protocolMapKey = `protocol_${key.id}`;
             const originalMessageId = (await this.baileysCache.get(protocolMapKey)) as string;
 
-            if (originalMessageId) {
-              message.keyId = originalMessageId;
+            // secretEncryptedMessage edit envelopes carry the original message ID in editedMessage.key.id
+            const editedMessageOriginalId = (update as any)?.message?.editedMessage?.key?.id as string | undefined;
+
+            const resolvedOriginalId = originalMessageId || editedMessageOriginalId;
+
+            if (resolvedOriginalId) {
+              message.keyId = resolvedOriginalId;
             }
 
-            const searchId = originalMessageId || key.id;
+            const searchId = resolvedOriginalId || key.id;
 
             const messages = (await this.prismaRepository.$queryRaw`
               SELECT * FROM "Message"
