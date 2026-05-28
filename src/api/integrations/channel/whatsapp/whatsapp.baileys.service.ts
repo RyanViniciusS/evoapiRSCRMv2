@@ -660,7 +660,7 @@ export class BaileysStartupService extends ChannelStartupService {
           const proxyUrls = text.split('\r\n');
           const rand = Math.floor(Math.random() * Math.floor(proxyUrls.length));
           const proxyUrl = 'http://' + proxyUrls[rand];
-          options = { agent: makeProxyAgent(proxyUrl), fetchAgent: makeProxyAgentUndici(proxyUrl) };
+          options = { agent: makeProxyAgent(proxyUrl), fetchAgent: makeProxyAgent(proxyUrl) };
         } catch {
           this.localProxy.enabled = false;
         }
@@ -673,7 +673,7 @@ export class BaileysStartupService extends ChannelStartupService {
             username: this.localProxy.username,
             password: this.localProxy.password,
           }),
-          fetchAgent: makeProxyAgentUndici({
+          fetchAgent: makeProxyAgent({
             host: this.localProxy.host,
             port: this.localProxy.port,
             protocol: this.localProxy.protocol,
@@ -711,7 +711,7 @@ export class BaileysStartupService extends ChannelStartupService {
       markOnlineOnConnect: this.localSettings.alwaysOnline,
       retryRequestDelayMs: 350,
       maxMsgRetryCount: 4,
-      fireInitQueries: false,
+      fireInitQueries: true,
       connectTimeoutMs: 30_000,
       keepAliveIntervalMs: 30_000,
       qrTimeout: 45_000,
