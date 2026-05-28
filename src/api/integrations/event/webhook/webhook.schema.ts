@@ -34,6 +34,7 @@ export const webhookSchema: JSONSchema7 = {
         headers: { type: 'object' },
         byEvents: { type: 'boolean' },
         base64: { type: 'boolean' },
+        coexistencia: { type: 'boolean' },
         events: {
           type: 'array',
           minItems: 0,
