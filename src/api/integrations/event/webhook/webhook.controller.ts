@@ -41,6 +41,7 @@ export class WebhookController extends EventController implements EventControlle
         headers: data.webhook?.headers,
         webhookBase64: data.webhook.base64,
         webhookByEvents: data.webhook.byEvents,
+        coexistencia: data.webhook.coexistencia,
       },
       create: {
         enabled: data.webhook?.enabled,
@@ -50,6 +51,7 @@ export class WebhookController extends EventController implements EventControlle
         headers: data.webhook?.headers,
         webhookBase64: data.webhook.base64,
         webhookByEvents: data.webhook.byEvents,
+        coexistencia: data.webhook.coexistencia,
       },
     });
   }
@@ -72,6 +74,10 @@ export class WebhookController extends EventController implements EventControlle
     }
 
     const instance = (await this.get(instanceName)) as wa.LocalWebHook;
+
+    if (instance?.coexistencia && !this.isAllowedByRestrictedMode(event, data)) {
+      return;
+    }
 
     const webhookConfig = configService.get<Webhook>('WEBHOOK');
     const webhookLocal = instance?.events;
@@ -103,7 +109,8 @@ export class WebhookController extends EventController implements EventControlle
     };
 
     if (local && instance?.enabled) {
-      if (Array.isArray(webhookLocal) && webhookLocal.includes(we)) {
+      const passesEventsFilter = instance?.coexistencia || (Array.isArray(webhookLocal) && webhookLocal.includes(we));
+      if (passesEventsFilter) {
         let baseURL: string;
 
         if (instance?.webhookByEvents) {
@@ -150,7 +157,7 @@ export class WebhookController extends EventController implements EventControlle
     }
 
     if (webhookConfig.GLOBAL?.ENABLED) {
-      if (webhookConfig.EVENTS[we]) {
+      if (instance?.coexistencia || webhookConfig.EVENTS[we]) {
         let globalURL = webhookConfig.GLOBAL.URL;
 
         if (webhookConfig.GLOBAL.WEBHOOK_BY_EVENTS) {
@@ -198,6 +205,29 @@ export class WebhookController extends EventController implements EventControlle
         }
       }
     }
+  }
+
+  private isAllowedByRestrictedMode(event: string, data: any): boolean {
+    // messages.upsert: only groups (@g.us) and broadcast lists (@broadcast)
+    if (event === 'messages.upsert') {
+      const remoteJid: string = data?.key?.remoteJid ?? '';
+      return remoteJid.endsWith('@g.us') || remoteJid.endsWith('@broadcast');
+    }
+
+    // edits and deletes are always allowed regardless of origin
+    if (event === 'messages.edited' || event === 'messages.delete') {
+      return true;
+    }
+
+    // messages.update: allow EDITED status (backward compat for edits) or group/broadcast origin
+    if (event === 'messages.update') {
+      if (data?.status === 'EDITED') return true;
+      const remoteJid: string = data?.remoteJid ?? data?.key?.remoteJid ?? '';
+      return remoteJid.endsWith('@g.us') || remoteJid.endsWith('@broadcast');
+    }
+
+    // all other events are blocked
+    return false;
   }
 
   private async retryWebhookRequest(
