@@ -9,6 +9,7 @@ import { ChatController } from './controllers/chat.controller';
 import { GroupController } from './controllers/group.controller';
 import { InstanceController } from './controllers/instance.controller';
 import { LabelController } from './controllers/label.controller';
+import { ProxyAdminController } from './controllers/proxy-admin.controller';
 import { ProxyController } from './controllers/proxy.controller';
 import { SendMessageController } from './controllers/sendMessage.controller';
 import { SettingsController } from './controllers/settings.controller';
@@ -41,6 +42,7 @@ import { ProviderFiles } from './provider/sessions';
 import { PrismaRepository } from './repository/repository.service';
 import { CacheService } from './services/cache.service';
 import { WAMonitoringService } from './services/monitor.service';
+import { ProxyAdminService } from './services/proxy-admin.service';
 import { ProxyService } from './services/proxy.service';
 import { SettingsService } from './services/settings.service';
 import { TemplateService } from './services/template.service';
@@ -80,6 +82,9 @@ export const templateController = new TemplateController(templateService);
 
 const proxyService = new ProxyService(waMonitor);
 export const proxyController = new ProxyController(proxyService, waMonitor);
+
+const proxyAdminService = new ProxyAdminService(prismaRepository, waMonitor);
+export const proxyAdminController = new ProxyAdminController(proxyAdminService);
 
 const chatwootService = new ChatwootService(waMonitor, configService, prismaRepository, chatwootCache);
 export const chatwootController = new ChatwootController(chatwootService, configService);
@@ -139,3 +144,4 @@ const evoaiService = new EvoaiService(waMonitor, prismaRepository, configService
 export const evoaiController = new EvoaiController(evoaiService, prismaRepository, waMonitor);
 
 logger.info('Module - ON');
+
