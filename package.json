@@ -1,6 +1,6 @@
 {
   "name": "evolution-api",
-  "version": "2.2.4",
+  "version": "2.2.5",
   "description": "Rest api for communication with WhatsApp",
   "main": "./dist/main.js",
   "type": "commonjs",
@@ -72,7 +72,7 @@
     "@hapi/boom": "^10.0.1",
     "@paralleldrive/cuid2": "^2.2.2",
     "@prisma/client": "^6.16.2",
-    "@rscrm/baileys": "^1.0.2",
+    "@rscrm/baileys": "^1.0.3",
     "@sentry/node": "^10.12.0",
     "@types/uuid": "^10.0.0",
     "amqplib": "^0.10.5",
