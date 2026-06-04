@@ -766,14 +766,14 @@ export class BaileysStartupService extends ChannelStartupService {
 
     this.client.ws.on('CB:call', (packet) => {
       console.log('CB:call', packet);
-      const payload = { event: 'CB:call', packet: packet };
-      this.sendDataWebhook(Events.CALL, payload, true, ['websocket']);
+      const payload = { event: 'CB:call', packet: packet, instanceId: this.instanceId };
+      this.sendDataWebhook(Events.CALL, payload);
     });
 
     this.client.ws.on('CB:ack,class:call', (packet) => {
       console.log('CB:ack,class:call', packet);
-      const payload = { event: 'CB:ack,class:call', packet: packet };
-      this.sendDataWebhook(Events.CALL, payload, true, ['websocket']);
+      const payload = { event: 'CB:ack,class:call', packet: packet, instanceId: this.instanceId };
+      this.sendDataWebhook(Events.CALL, payload);
     });
 
     this.phoneNumber = number;
@@ -2026,6 +2026,10 @@ export class BaileysStartupService extends ChannelStartupService {
             const database = this.configService.get<Database>('DATABASE');
             const settings = await this.findSettings();
 
+            if (events['connection.update']) {
+              this.connectionUpdate(events['connection.update']);
+            }
+
             if (events.call) {
               const call = events.call[0];
 
@@ -2042,11 +2046,7 @@ export class BaileysStartupService extends ChannelStartupService {
                 this.client.ev.emit('messages.upsert', { messages: [msg], type: 'notify' });
               }
 
-              this.sendDataWebhook(Events.CALL, call);
-            }
-
-            if (events['connection.update']) {
-              this.connectionUpdate(events['connection.update']);
+              this.sendDataWebhook(Events.CALL, { ...call, instanceId: this.instanceId, pushName: (call as any).notify ?? null });
             }
 
             if (events['creds.update']) {
