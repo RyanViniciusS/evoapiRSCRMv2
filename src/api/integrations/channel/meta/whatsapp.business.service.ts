@@ -396,7 +396,7 @@ export class BusinessStartupService extends ChannelStartupService {
 
       let createdMessage: any = null;
 
-      if (received.contacts) pushName = received.contacts[0].profile.name;
+      if (received.contacts) pushName = received.contacts[0]?.profile?.name;
 
       if (received.messages) {
         const message = received.messages[0]; // Añadir esta línea para definir message
@@ -799,6 +799,7 @@ export class BusinessStartupService extends ChannelStartupService {
             });
 
             if (!findMessage) {
+              this.logger.warn(`[STATUS] Mensagem não encontrada no banco para key.id=${key.id} instanceId=${this.instanceId}`);
               return;
             }
 
@@ -1262,9 +1263,8 @@ export class BusinessStartupService extends ChannelStartupService {
       const token = this.token;
 
       const headers = { Authorization: `Bearer ${token}` };
-      const url = `${this.configService.get<WaBusiness>('WA_BUSINESS').URL}/${
-        this.configService.get<WaBusiness>('WA_BUSINESS').VERSION
-      }/${this.number}/media`;
+      const url = `${this.configService.get<WaBusiness>('WA_BUSINESS').URL}/${this.configService.get<WaBusiness>('WA_BUSINESS').VERSION
+        }/${this.number}/media`;
 
       const res = await axios.post(url, formData, { headers });
       return res.data.id;
